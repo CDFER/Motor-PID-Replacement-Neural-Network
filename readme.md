@@ -57,4 +57,81 @@ In exploring alternative approaches, I considered using **Recurrent Neural Netwo
 
 I also experimented with **Reinforcement Learning (RL)**, but found it to be overly reliant on meticulous parameter and reward function tuning to achieve decent results. The trial-and-error process of adjusting rewards, penalties, and exploration rates proved time-consuming and frustrating, leading me to seek a more simple approach.
 
-Instead, I chose to focus on a more traditional **feedforward neural network**, KISS.
+Instead, I chose to focus on a more traditional **feedforward neural network**, K.I.S.S.
+
+
+**Previous Work in this Space**
+--------------------------------
+
+#### Replacing PID Controllers with ANN Controllers for DC Motor Position Control
+
+https://arxiv.org/pdf/1312.0148
+
+* **Author:** Aamir, Muhammad
+* **Date:** April 2013
+* **Journal:** International Journal of Research Studies in Computing
+* **Neural Network Implementation:** Feedforward neural network trained through supervised learning
+* **Validation Environment:** MATLAB's Simulink model
+
+**Key Findings:**
+
+* The neural network controller showed acceptable results in terms of time delay factor and system dynamics.
+* Increasing the network size can improve system performance, but may also increase cost and complexity.
+
+**Limitations:**
+
+* The accuracy of the neural network control may not be very high, but still comparable to PID control with acceptable results.
+
+---------------------------------------------------
+
+#### Comparison of PID and ANN Controllers in Robotic Arms
+
+https://www.diva-portal.org/smash/get/diva2:1351191/FULLTEXT01.pdf
+
+* **Authors:** Joseph Ariss, Salim Rabat
+* **Date:** 2019
+* **Institution:** KTH Royal Institute of Technology, Stockholm, Sweden
+* **Neural Network Implementation:** Feedforward neural network trained through supervised learning
+* **Validation Environment:** MATLAB's Simulink, with a custom robotic arm model
+
+**Key Findings:**
+
+* The neural network controller outperforms the traditional PID controller in noisy environments.
+* The neural network controller is beneficial in scenarios with high friction and noise.
+
+**Limitations:**
+
+* The PID controller is more precise in non-noisy environments.
+
+---------------------------------------------------
+
+#### Optimization of Neural Network-Based Self-Tuning PID Controllers
+
+https://www.mdpi.com/2076-3417/11/17/8002
+
+* **Authors:** Yong-Seok Lee and Dong-Won Jang
+* **Date:** 2021
+* **Journal:** Applied Sciences
+* **Neural Network Implementation:** Two neural networks: one for identifying the target system and one for recommending PID parameters; LSTM networks showed better performance than ANN
+* **Validation Environment:** A simulator based on a mass-spring-damper model, with a second-order system for position control
+
+**Key Findings:**
+
+* LSTM networks showed approximately 98% success in tuning.
+* LSTM network with 11 sampling data points and no response characteristics showed 53% better performance than ANN.
+
+**Limitations:**
+
+* ANN without response characteristics showed poor performance.
+* PID setting failed for certain values.
+* Noise in the system can result in failed tuning attempts.
+* Complex approach requires lots of training data and GPU time.
+
+**Interesting Aspects:**
+
+* Use of two neural networks to reduce the number of tuning attempts.
+* Ability to identify system information and recommend optimal PID parameters.
+* Potential for application in conservative industries where PID controllers are widely used.
+* Robustness against noise and changes in target position.
+
+---------------------------------------------------
