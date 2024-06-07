@@ -23,9 +23,10 @@ This repository presents a novel approach to controlling brushed DC motors using
 
 To train the neural network, I employed a unique approach:
 
-* **Event-driven Training**: Instead of training the model at fixed intervals, I opted to trigger the neural network when a rotation is complete, as indicated by the hall effect sensor.
-* **Swarm-optimized Model Structure**: Instead of guessing I have have set up a swarm of particles to find the number of history steps and parameters that give the best results
+* **Event-driven Timing**: Instead of running the model at fixed intervals, I opted to trigger the neural network when a rotation is complete, as indicated by the hall effect sensor.
+* **Swarm-optimized Model Structure**: Instead of guessing, I have have set up a swarm of particles to find the number of history steps and parameters that give the best results
 * **Overview Chart**: The following diagram illustrates the overall flow of the neural network (more detail is in `/modelTraining.ipynb`): ![Flow chart of neural network](images/overview.png)
+* **On Divice Training (not yet stable)** The model can be trained (albiet much more slowly) on the esp32 (see my on device training demo library) I hope to have this stable in a week or so once my brain recovers from the adventure of setting up this code -> I really have come to dislike corprate open source code and the current state of tensorflow...
 
 
 **The Physical Setup**
