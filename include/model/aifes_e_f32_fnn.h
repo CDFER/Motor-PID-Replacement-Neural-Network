@@ -9,7 +9,7 @@
 
   Paste the following code into your project and insert your inputs/features:
   ---------------------------------------------------------------------------  
-    float input_data[12]; // AIfES input data
+    float input_data[32]; // AIfES input data
     float output_data[1]; // AIfES output data
 
     aifes_e_f32_fnn_inference((float*)input_data,(float*)output_data);
@@ -40,7 +40,7 @@
 
 void aifes_e_f32_fnn_inference(float* input_data, float* output_data)
 {
-  uint32_t FNN_structure[FNN_LAYERS] = {12, 150, 1};
+  uint32_t FNN_structure[FNN_LAYERS] = {32, 256, 1};
   
   uint16_t input_shape[] = {DATASETS, (uint16_t)FNN_structure[0]};
   aitensor_t input_tensor = AITENSOR_2D_F32(input_shape, input_data);    

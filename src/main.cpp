@@ -12,6 +12,7 @@
 #include "model/aifes_e_f32_fnn.h"
 
 #include "secrets.h"
+#include "circularBuffer.h"
 
 TaskHandle_t motorTaskHandle;
 
@@ -33,157 +34,315 @@ uint16_t  telnetPort = 23;
 #define MOTOR_A_PIN 26
 #define MOTOR_B_PIN 27
 
+const int pwmFrequency = 19500;  // PWM frequency
+const int pwmResolution = 12;  // PWM resolution (bits)
+const int16_t pwmMax = pow(2, pwmResolution) - 1;
 
+const int positionRange = 2000;//100; // max numeber of rotations before slowdown bias kicks in
+// float rotationIntervals[positionRange * 5]; //if there is a motor stall we still want the data but the rotation count doesn't go up x3 seems to work well
+// float pwmPercents[positionRange * 5];
+int rotationIndex;
+
+CircularBuffer<float, 32> rotations;
+CircularBuffer<float, 32> pwms;
+
+float targetInterval = 0.1;
+uint32_t maxRotationIntervalMicros = 500 * 1000; //500ms
+
+volatile uint32_t intervalStartTime = 0;
+volatile uint32_t resetTime = 0;
 volatile uint32_t intervalEndTime = 0;
 volatile int8_t direction = 1;
 volatile int16_t position = 0;
 
-void rotationEndISR() {
-	if (intervalEndTime == 0) {
-		intervalEndTime = micros();
-	}
-
-	position += direction;
+void rotationResetISR() {
+	resetTime = micros();
 }
 
-void neuralNetworkMotor(void* parameter) {
+void rotationEndISR() { 
+	uint32_t currentTime = micros();
+	if (currentTime - resetTime > 1000 && currentTime - intervalStartTime > 1000) { //no reasonable motor would run more than 60,000rpm in a model train
+		if (intervalEndTime == 0) {
+			intervalEndTime = currentTime;
+		}
+
+		position += direction;
+	}
+}
+
+void encoderISR() {
+	if (digitalRead(ENCODER_PIN) == HIGH)
+	{
+		rotationEndISR();
+	}
+	else {
+		rotationResetISR();
+	}
+
+}
+
+#include <QuickPID.h>
+float Kp = 0.0012, Ki = 0.10, Kd = 0.0;
+float PIDSetpoint, PIDInput, PIDOutput;
+QuickPID myPID(&PIDInput, &PIDOutput, &PIDSetpoint, Kp, Ki, Kd,  /* OPTIONS */
+	myPID.pMode::pOnError,                   /* pOnError, pOnMeas, pOnErrorMeas */
+	myPID.dMode::dOnMeas,                    /* dOnError, dOnMeas */
+	myPID.iAwMode::iAwCondition,             /* iAwCondition, iAwClamp, iAwOff */
+	myPID.Action::direct);                   /* direct, reverse */
+
+
+int16_t runPID(float& targetInterval) {
+	PIDInput = 60.0 / (float)rotations[0]; //convert to rpm
+	myPID.Compute();
+
+	return (int16_t)(0.5 + ((float)PIDOutput * (float)pwmMax));
+}
+
+float kickStart = 0.6;
+float stall = 0.5;
+
+int16_t runFuzzyLogic(float& targetInterval) {
+	float pwmOutput;
+	if (rotations[0] == 1.0) {
+		pwmOutput = kickStart;
+		kickStart *= 1.005;
+
+		if (rotations[1] != 1.0 && pwms[1] > 0.0 && pwms[1] > stall) {
+			stall = pwms[1];
+		}
+
+	}
+	else if (rotations[1] == 1.0) {
+		pwmOutput = stall * 1.01;
+		kickStart *= 0.99;
+	}
+	else if (rotations[0] > targetInterval) {
+		pwmOutput = stall * 1.01;
+	}
+	else if (rotations[0] < targetInterval) {
+		pwmOutput = stall * 1.01;
+		stall *= 0.9999;
+	}
+	else {
+		pwmOutput = pwms[0];
+	}
+
+	pwmOutput = constrain(pwmOutput, 0.010, 0.7);
+
+	// if (targetInterval - 0.05 < rotationIntervals[rotationIndex - 1] < targetInterval + 0.05){
+	// 	targetPWM = (targetPWM * 0.9) + (rotationIntervals[rotationIndex - 1] * 0.1);
+	// }
+
+	return (int16_t)(pwmOutput * (float)pwmMax);
+}
+
+
+int16_t runNeuralNetwork(float& targetInterval) {
+	if (rotations[0] == 1.0) {
+		targetInterval *= 0.95;
+	}
+	else {
+		if (rotations[0] < 0.025) {
+			targetInterval *= 1.1;
+		}
+		else if (rotations[0] > 0.1) {
+			targetInterval *= 0.9;
+		}
+		targetInterval = constrain(targetInterval, rotations[0] - 0.02, rotations[0] + 0.02);
+	}
+
+	targetInterval = constrain(targetInterval, 0.01, 0.5);
+
+	// telnet.printf("\n========\n");
+
+	// float input_data[] = {
+	// 	rotationIntervals[rotationIndex - 5],
+	// 	pwmPercents[rotationIndex - 6],
+	// 	rotationIntervals[rotationIndex - 4],
+	// 	pwmPercents[rotationIndex - 5],
+	// 	rotationIntervals[rotationIndex - 3],
+	// 	pwmPercents[rotationIndex - 4],
+	// 	rotationIntervals[rotationIndex - 2],
+	// 	pwmPercents[rotationIndex - 3],
+	// 	rotationIntervals[rotationIndex - 1],
+	// 	pwmPercents[rotationIndex - 2],
+	// 	targetInterval,
+	// 	pwmPercents[rotationIndex - 1] };
+
+	float input_data[] = {
+		rotations[14],
+		pwms[15],
+		rotations[13],
+		pwms[14],
+		rotations[12],
+		pwms[13],
+		rotations[11],
+		pwms[12],
+		rotations[10],
+		pwms[11],
+		rotations[9],
+		pwms[10],
+		rotations[8],
+		pwms[9],
+		rotations[7],
+		pwms[8],
+		rotations[6],
+		pwms[7],
+		rotations[5],
+		pwms[6],
+		rotations[4],
+		pwms[5],
+		rotations[3],
+		pwms[4],
+		rotations[2],
+		pwms[3],
+		rotations[1],
+		pwms[2],
+		rotations[0],
+		pwms[1],
+		targetInterval,
+		pwms[0]};
+
+	// for (size_t i = 0; i < 8; i++){
+	// 	telnet.printf("%f,\n", input_data[i]);
+	// }
+	// telnet.printf("========\n");
+
+	float output_data[1];  // AIfES output data
+	aifes_e_f32_fnn_inference((float*)input_data, (float*)output_data); //641 Parameter model ~0.43ms 
+
+	// telnet.printf("%f,\n", output_data[0]);
+	// telnet.printf("========\n");
+	return (int16_t)(output_data[0] * (float)pwmMax);
+}
+
+void driveMotor(int16_t currentPWM) {
+
+	if (direction > 0) {
+		analogWrite(MOTOR_A_PIN, currentPWM);
+		analogWrite(MOTOR_B_PIN, 0);
+	}
+	else {
+		analogWrite(MOTOR_A_PIN, 0);
+		analogWrite(MOTOR_B_PIN, currentPWM);
+	}
+}
+
+void motorDatasetTask(void* parameter) {
 	telnet.begin(telnetPort);
 	telnet.loop();
 
-	const int pwmFrequency = 19500;  // PWM frequency
-	const int pwmResolution = 12;  // PWM resolution (bits)
-	const int16_t pwmMax = pow(2, pwmResolution) - 1;
-
 	analogWriteFrequency(pwmFrequency);
 	analogWriteResolution(pwmResolution);
-
-	const int maxRotationIntervalMicros = 1000 * 1000; // max microseconds before calling the test a stall
-
-	const int positionRange = 100; // max numeber of rotations before slowdown bias kicks in
-	float rotationIntervals[positionRange * 5]; //if there is a motor stall we still want the data but the rotation count doesn't go up x3 seems to work well
-	float pwmPercents[positionRange * 5];
-
 	analogWrite(MOTOR_A_PIN, 0);
 	analogWrite(MOTOR_B_PIN, 0);
-	attachInterrupt(ENCODER_PIN, rotationEndISR, RISING);
+	attachInterrupt(ENCODER_PIN, encoderISR, CHANGE);
+
+	myPID.SetOutputLimits(0.0, 1.0);
+	myPID.SetSampleTimeUs(1000);
+	myPID.SetTunings(Kp, Ki, Kd);
+	myPID.SetMode(myPID.Control::automatic);
+	PIDSetpoint = 600;
+
+	// 	// Access the last 6 items in the buffer
+	// 	for (int i = 0; i < 6; i++) {
+	// 		telnet.print(myBuffer[i]); // Print the i-th most recent element
+	// 		telnet.print(" ");
+	// 	}
+	// 	telnet.println();
+	// 	telnet.loop();
+	// 	vTaskDelay(1000 / portTICK_PERIOD_MS); //let everything settle
+	// }
+
 
 	while (telnet.isConnected() == false) {
 		telnet.loop();
 	}
 
 	while (true) {
-		int rotationIndex = 0;
-		int16_t currentPWM = 0;
-		int targetPosition = random(0, positionRange);
-		float targetInterval = 0.3;
-		uint8_t pwmRandomnessMultiplier = (uint8_t)random(1, 10);
+		if (telnet.isConnected()) {
+			int16_t currentPWM = 0;
+			rotationIndex = 0;
+			int targetPosition = random(0, positionRange);
+			uint8_t pwmRandomnessMultiplier = 0;
 
-		vTaskDelay(2000 / portTICK_PERIOD_MS); //let everything settle
+			vTaskDelay(2000 / portTICK_PERIOD_MS); //let everything settle
 
-		for (size_t i = 0; i < 6; i++)
-		{
-			rotationIntervals[rotationIndex] = 1.0;
-			pwmPercents[rotationIndex] = 0.0;
-			// telnet.printf("%0.6f,%0.4f\r\n", rotationIntervals[rotationIndex], pwmPercents[rotationIndex]);
+			pwms.add(0.0);
+			rotations.add(1.0);
+			telnet.printf("1.000000,0.0000\r\n");
+
+			direction = (targetPosition > position) ? 1 : -1;
+
+			pwmRandomnessMultiplier = (uint8_t)random(0, 16);
+
+			while (abs(position - targetPosition) > 10) {
+
+				// if (rotations[0] < targetInterval){
+				// 	pwmRandomnessMultiplier = (uint8_t)random(0, 16);
+				// } else {
+				// 	pwmRandomnessMultiplier = (uint8_t)random(0, 4);
+				// }
+				
+
+				currentPWM = runNeuralNetwork(targetInterval);
+				// currentPWM = runFuzzyLogic(targetInterval);
+				// currentPWM = runPID(targetInterval);
+
+				// PWM Noise Generator (critical for a good dataset)
+				// if (rotations[0] == 1.0) {
+				// 	currentPWM += pwmRandomnessMultiplier * (int16_t)random(-80, 80);
+				// }
+				// else if (rotations[1] == 1.0){
+				// 	currentPWM += pwmRandomnessMultiplier * (int16_t)random(-320, 40);
+				// }
+				// else if (rotations[0] > targetInterval) {
+				// 	currentPWM += pwmRandomnessMultiplier * (int16_t)random(-9, 10);
+				// }
+				// else if (rotations[0] < targetInterval) {
+				// 	currentPWM += pwmRandomnessMultiplier * (int16_t)random(-10, 9);
+				// }
+
+				currentPWM += (int16_t)random(-80, 80);
+
+				currentPWM = constrain(currentPWM, 0, pwmMax * 0.8);
+				driveMotor(currentPWM);
+
+				intervalStartTime = micros();
+				intervalEndTime = 0;
+
+				// pwmPercents[rotationIndex] = (float)currentPWM / (float)pwmMax;
+				pwms.add((float)currentPWM / (float)pwmMax);
+
+				do {
+					telnet.loop();
+				} while (intervalEndTime == 0 && micros() < intervalStartTime + maxRotationIntervalMicros);
+
+				if (intervalEndTime == 0) {
+					// rotationIntervals[rotationIndex] = 1.0; // motor stalled
+					rotations.add(1.0);
+				}
+				else {
+					// rotationIntervals[rotationIndex] = (float)(intervalEndTime - intervalStartTime) / (1000000.0);
+					rotations.add((float)(intervalEndTime - intervalStartTime) / (1000000.0));
+				}
+
+				// telnet.printf("%0.3f,%0.6f,%0.4f\r\n", targetInterval, rotationIntervals[rotationIndex], pwmPercents[rotationIndex]);
+				// telnet.printf("%0.3f,%0.6f,%0.4f\r\n", targetInterval, rotations[0], pwms[0]);
+				telnet.printf("%0.6f,%0.4f\r\n", rotations[0], pwms[0]);
+				// telnet.printf("%0.6f,%0.4f\r\n", rotationIntervals[rotationIndex], pwmPercents[rotationIndex]);
+
+				rotationIndex++;
+			}
+
+			driveMotor(0);
+
+		}
+		else {
 			telnet.loop();
-			rotationIndex++;
+			vTaskDelay(100 / portTICK_PERIOD_MS);
 		}
 
-		telnet.printf("1.000000,0.0000\r\n1.000000,0.0000\r\n1.000000,0.0000\r\n1.000000,0.0000\r\n");
-
-
-		while (abs(position - targetPosition) > 2) {
-			if (targetPosition > position) {
-				direction = 1;
-			}
-			else {
-				direction = -1;
-			}
-
-			if (rotationIntervals[rotationIndex - 1] == 1.0) {
-				targetInterval -= 0.02;
-			}
-			else if (rotationIntervals[rotationIndex - 1] < 0.15) {
-				targetInterval += 0.01;
-			}
-			else if (rotationIntervals[rotationIndex - 1] > 0.25) {
-				targetInterval -= 0.01;
-			}
-			targetInterval = constrain(targetInterval, 0.05, 0.35);
-
-			// telnet.printf("\n========\n");
-
-			float input_data[] = {
-				rotationIntervals[rotationIndex - 5],
-				pwmPercents[rotationIndex - 6],
-				rotationIntervals[rotationIndex - 4],
-				pwmPercents[rotationIndex - 5],
-				rotationIntervals[rotationIndex - 3],
-				pwmPercents[rotationIndex - 4],
-				rotationIntervals[rotationIndex - 2],
-				pwmPercents[rotationIndex - 3],
-				rotationIntervals[rotationIndex - 1],
-				pwmPercents[rotationIndex - 2],
-				targetInterval,
-				pwmPercents[rotationIndex - 1] };
-
-			// for (size_t i = 0; i < 8; i++){
-			// 	telnet.printf("%f,\n", input_data[i]);
-			// }
-			// telnet.printf("========\n");
-
-			float output_data[1];  // AIfES output data
-			aifes_e_f32_fnn_inference((float*)input_data, (float*)output_data); //641 Parameter model ~0.43ms 
-
-			// telnet.printf("%f,\n", output_data[0]);
-			// telnet.printf("========\n");
-			currentPWM = (int16_t)(output_data[0] * (float)pwmMax);
-
-			// PWM Noise Generator
-			if (rotationIntervals[rotationIndex - 1] == 1.0){
-				currentPWM += pwmRandomnessMultiplier * (int16_t)random(-40, 10);
-			} else if (rotationIntervals[rotationIndex - 2] == 1.0) {
-				currentPWM += pwmRandomnessMultiplier * (int16_t)random(-20, 10);
-			} else {
-				currentPWM += pwmRandomnessMultiplier * (int16_t)random(-10, 10);
-			}
-
-			currentPWM = constrain(currentPWM, 0, pwmMax);
-
-			if (direction > 0) {
-				analogWrite(MOTOR_A_PIN, currentPWM);
-				analogWrite(MOTOR_B_PIN, 0);
-			}
-			else {
-				analogWrite(MOTOR_A_PIN, 0);
-				analogWrite(MOTOR_B_PIN, currentPWM);
-			}
-
-
-			uint32_t startTime = micros();
-			intervalEndTime = 0;
-			pwmPercents[rotationIndex] = (float)currentPWM / (float)pwmMax;
-
-			while (intervalEndTime == 0 && micros() < startTime + maxRotationIntervalMicros) {
-				telnet.loop();
-			}
-
-			if (intervalEndTime == 0) {
-				rotationIntervals[rotationIndex] = 1.0; // motor stalled or <60rpm
-			}
-			else {
-				uint32_t interval = intervalEndTime - startTime;
-				rotationIntervals[rotationIndex] = (float)interval / (1000000.0);
-			}
-
-			//telnet.printf("%0.3f,%0.6f,%0.4f\r\n", targetInterval, rotationIntervals[rotationIndex], pwmPercents[rotationIndex]);
-			telnet.printf("%0.6f,%0.4f\r\n", rotationIntervals[rotationIndex], pwmPercents[rotationIndex]);
-
-			rotationIndex++;
-		}
-
-		analogWrite(MOTOR_A_PIN, 0);
-		analogWrite(MOTOR_B_PIN, 0);
 	}
 }
 
@@ -300,7 +459,7 @@ void setup() {
 		xTaskCreatePinnedToCore(otaTask, "otaTask", 10000, NULL, 5, NULL, 0);
 		vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-		xTaskCreatePinnedToCore(neuralNetworkMotor, "neuralNetworkMotor", 40000, NULL, 0, &motorTaskHandle, 0);
+		xTaskCreatePinnedToCore(motorDatasetTask, "motorDatasetTask", 40000, NULL, 0, &motorTaskHandle, 0);
 	}
 }
 
@@ -444,7 +603,7 @@ void loop() {
 // uint8_t kickStartEndSpeed = 32;
 
 
-/*void motorTask(void* parameter) {
+/*void motorDatasetTask(void* parameter) {
 	telnet.onConnect(onTelnetConnect);
 	telnet.begin(telnetPort);
 	analogReadResolution(12);
@@ -552,7 +711,7 @@ void loop() {
 		// Handle resetting CVs back to Factory Defaults
 		if (FactoryDefaultCVIndex && Dcc.isSetCVReady())
 		{
-			FactoryDefaultCVIndex--; // Decrement first as initially it is the size of the array 
+			FactoryDefaultCVIndex--; // Decrement first as initially it is the size of the array
 			Dcc.setCV(FactoryDefaultCVs[FactoryDefaultCVIndex].CV, FactoryDefaultCVs[FactoryDefaultCVIndex].Value);
 		}
 
@@ -618,11 +777,11 @@ void loop() {
 			}
 
 			analogWrite(MOTOR_A_PIN, currentPWM);
-			uint32_t startTime = micros();
+			uint32_t intervalStartTime = micros();
 			intervalEndTime = 0;
 			pwmPercents[rotationIndex] = (float)currentPWM / (float)pwmMax;
 
-			while (intervalEndTime == 0 && micros() < startTime + maxRotationIntervalMicros) {
+			while (intervalEndTime == 0 && micros() < intervalStartTime + maxRotationIntervalMicros) {
 				telnet.loop();
 			}
 
@@ -632,7 +791,7 @@ void loop() {
 
 			}
 			else {
-				uint32_t interval = intervalEndTime - startTime;
+				uint32_t interval = intervalEndTime - intervalStartTime;
 				rotationIntervals[rotationIndex] = (float)interval / (1000000.0);
 				stalled = false;
 			}
